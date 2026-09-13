@@ -2,6 +2,8 @@ package com.example.aiza.voice.output
 
 import android.content.Context
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
@@ -15,16 +17,22 @@ import java.util.UUID
 data class VoiceInfo(
     val name: String,
     val localeDisplayName: String,
-    val isNetworkConnectionRequired: Boolean = false
+    val isNetworkConnectionRequired: Boolean = false,
+    val quality: String = "Normal"
 )
 
 /**
- * Modular Text-to-Speech interface allowing the voice engine to be replaced later.
+ * Modular Text-to-Speech interface allowing the voice engine to be replaced later
+ * (e.g. Android native TTS, cloud neural TTS, or local ONNX engines).
  */
 interface TextToSpeechEngine {
+    val engineId: String get() = "native_android_tts"
+    val engineName: String get() = "Android Native Text-to-Speech"
     val isReady: Boolean
+    val isSpeaking: Boolean get() = false
 
     fun initialize(onReady: (Boolean) -> Unit)
+
     fun speak(
         text: String,
         languageCode: String,
@@ -33,6 +41,7 @@ interface TextToSpeechEngine {
         onDone: () -> Unit = {},
         onError: (String) -> Unit = {}
     )
+
     fun stop()
     fun pause()
     fun resume()
@@ -40,28 +49,44 @@ interface TextToSpeechEngine {
     fun setSpeechRate(rate: Float)
     fun getAvailableVoices(): List<VoiceInfo>
     fun setVoice(voiceName: String): Boolean
+    fun setOnWordRangeListener(listener: ((utteranceId: String, start: Int, end: Int, word: String) -> Unit)?) {}
     fun shutdown()
 }
 
 /**
- * Default Android native implementation of TextToSpeechEngine.
+ * Default Android native implementation of TextToSpeechEngine using the Android TextToSpeech API.
  */
 class AndroidTextToSpeechEngine(
     private val context: Context,
     private val logger: DiagnosticLogger
 ) : TextToSpeechEngine {
 
+    override val engineId: String = "android_tts"
+    override val engineName: String = "Android Text-to-Speech"
+
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var tts: TextToSpeech? = null
     private var isInitialized = false
-    private var pendingText: String? = null
+    private var _isSpeaking = false
+    override val isSpeaking: Boolean get() = _isSpeaking
 
     private var currentPitch: Float = 1.0f
     private var currentRate: Float = 1.0f
 
     private val callbackMap = mutableMapOf<String, Triple<() -> Unit, () -> Unit, (String) -> Unit>>()
+    private val textMap = mutableMapOf<String, String>()
+    private var wordRangeListener: ((utteranceId: String, start: Int, end: Int, word: String) -> Unit)? = null
 
     override val isReady: Boolean
         get() = isInitialized && tts != null
+
+    private fun runOnMain(action: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            action()
+        } else {
+            mainHandler.post(action)
+        }
+    }
 
     override fun initialize(onReady: (Boolean) -> Unit) {
         if (isInitialized && tts != null) {
@@ -71,30 +96,32 @@ class AndroidTextToSpeechEngine(
 
         try {
             tts = TextToSpeech(context.applicationContext) { status ->
-                if (status == TextToSpeech.SUCCESS) {
-                    isInitialized = true
-                    setupUtteranceListener()
-                    applyCurrentSettings()
-                    logger.logDiagnostic(
-                        category = "TTS",
-                        message = "Android TTS Engine initialized successfully.",
-                        level = DiagnosticLogger.Level.INFO
-                    )
-                    onReady(true)
-                } else {
-                    isInitialized = false
-                    logger.logDiagnostic(
-                        category = "TTS",
-                        message = "Android TTS Engine initialization failed with status: $status",
-                        level = DiagnosticLogger.Level.ERROR
-                    )
-                    onReady(false)
+                runOnMain {
+                    if (status == TextToSpeech.SUCCESS) {
+                        isInitialized = true
+                        setupUtteranceListener()
+                        applyCurrentSettings()
+                        logger.logDiagnostic(
+                            category = "TTS",
+                            message = "Android TextToSpeech engine initialized successfully.",
+                            level = DiagnosticLogger.Level.INFO
+                        )
+                        onReady(true)
+                    } else {
+                        isInitialized = false
+                        logger.logDiagnostic(
+                            category = "TTS",
+                            message = "Android TextToSpeech initialization failed with status: $status",
+                            level = DiagnosticLogger.Level.ERROR
+                        )
+                        onReady(false)
+                    }
                 }
             }
         } catch (e: Exception) {
             logger.logDiagnostic(
                 category = "TTS",
-                message = "Exception while initializing TTS: ${e.localizedMessage}",
+                message = "Exception while initializing TextToSpeech: ${e.localizedMessage}",
                 level = DiagnosticLogger.Level.ERROR
             )
             onReady(false)
@@ -104,25 +131,37 @@ class AndroidTextToSpeechEngine(
     private fun setupUtteranceListener() {
         tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
+                _isSpeaking = true
                 utteranceId?.let { id ->
-                    callbackMap[id]?.first?.invoke()
+                    runOnMain {
+                        callbackMap[id]?.first?.invoke()
+                    }
                 }
             }
 
             override fun onDone(utteranceId: String?) {
+                _isSpeaking = false
                 utteranceId?.let { id ->
-                    callbackMap.remove(id)?.second?.invoke()
+                    runOnMain {
+                        textMap.remove(id)
+                        callbackMap.remove(id)?.second?.invoke()
+                    }
                 }
             }
 
             @Deprecated("Deprecated in Java")
             override fun onError(utteranceId: String?) {
+                _isSpeaking = false
                 utteranceId?.let { id ->
-                    callbackMap.remove(id)?.third?.invoke("TTS playback error")
+                    runOnMain {
+                        textMap.remove(id)
+                        callbackMap.remove(id)?.third?.invoke("TTS playback error")
+                    }
                 }
             }
 
             override fun onError(utteranceId: String?, errorCode: Int) {
+                _isSpeaking = false
                 utteranceId?.let { id ->
                     val errorDesc = when (errorCode) {
                         TextToSpeech.ERROR_NETWORK -> "Network connection error in TTS engine"
@@ -131,7 +170,24 @@ class AndroidTextToSpeechEngine(
                         TextToSpeech.ERROR_SYNTHESIS -> "Speech synthesis engine failure"
                         else -> "Speech output error (Code $errorCode)"
                     }
-                    callbackMap.remove(id)?.third?.invoke(errorDesc)
+                    runOnMain {
+                        textMap.remove(id)
+                        callbackMap.remove(id)?.third?.invoke(errorDesc)
+                    }
+                }
+            }
+
+            override fun onRangeStart(utteranceId: String?, start: Int, end: Int, frame: Int) {
+                if (utteranceId != null && wordRangeListener != null) {
+                    val fullText = textMap[utteranceId]
+                    val word = if (fullText != null && start >= 0 && end <= fullText.length && start < end) {
+                        fullText.substring(start, end)
+                    } else {
+                        ""
+                    }
+                    runOnMain {
+                        wordRangeListener?.invoke(utteranceId, start, end, word)
+                    }
                 }
             }
         })
@@ -175,6 +231,7 @@ class AndroidTextToSpeechEngine(
 
         applyCurrentSettings()
         callbackMap[utteranceId] = Triple(onStart, onDone, onError)
+        textMap[utteranceId] = text
 
         val params = Bundle().apply {
             putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId)
@@ -182,7 +239,9 @@ class AndroidTextToSpeechEngine(
 
         val speakResult = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, params, utteranceId)
         if (speakResult != TextToSpeech.SUCCESS) {
+            _isSpeaking = false
             callbackMap.remove(utteranceId)
+            textMap.remove(utteranceId)
             onError("Failed to dispatch utterance to TTS engine.")
         } else {
             logger.logDiagnostic(
@@ -196,7 +255,9 @@ class AndroidTextToSpeechEngine(
     override fun stop() {
         try {
             tts?.stop()
+            _isSpeaking = false
             callbackMap.clear()
+            textMap.clear()
             logger.logDiagnostic(
                 category = "TTS",
                 message = "TTS speech halted immediately by user interruption.",
@@ -212,12 +273,11 @@ class AndroidTextToSpeechEngine(
     }
 
     override fun pause() {
-        // Android TTS does not offer an OS-level pause; stopping serves as interrupt
         stop()
     }
 
     override fun resume() {
-        // Resume not supported natively without storing segment offsets
+        // Native Android TTS does not offer resume
     }
 
     override fun setPitch(pitch: Float) {
@@ -236,7 +296,8 @@ class AndroidTextToSpeechEngine(
                 VoiceInfo(
                     name = voice.name,
                     localeDisplayName = "${voice.locale.displayName} (${voice.locale.language})",
-                    isNetworkConnectionRequired = voice.isNetworkConnectionRequired
+                    isNetworkConnectionRequired = voice.isNetworkConnectionRequired,
+                    quality = if (voice.quality >= Voice.QUALITY_HIGH) "High" else "Normal"
                 )
             } ?: emptyList()
         } catch (e: Exception) {
@@ -258,24 +319,43 @@ class AndroidTextToSpeechEngine(
         }
     }
 
+    override fun setOnWordRangeListener(listener: ((utteranceId: String, start: Int, end: Int, word: String) -> Unit)?) {
+        this.wordRangeListener = listener
+    }
+
     override fun shutdown() {
         try {
             tts?.stop()
             tts?.shutdown()
             tts = null
             isInitialized = false
+            _isSpeaking = false
+            callbackMap.clear()
+            textMap.clear()
         } catch (e: Exception) {
             // Safe cleanup
         }
     }
 
-    private fun mapLanguageCodeToLocale(languageCode: String): Locale {
-        return when (languageCode.lowercase().trim()) {
-            "bn", "ben", "bengali" -> Locale("bn", "IN")
-            "hi", "hin", "hindi" -> Locale("hi", "IN")
-            "en", "eng", "english" -> Locale.US
-            "hinglish" -> Locale("hi", "IN") // Hinglish uses Hindi/English phonetics
-            else -> Locale.getDefault()
+    /**
+     * Resolves language codes to Locales cleanly using BCP-47 tags or Builder.
+     */
+    internal fun mapLanguageCodeToLocale(languageCode: String): Locale {
+        val cleanCode = languageCode.lowercase().trim()
+        return when {
+            cleanCode == "bn" || cleanCode == "ben" || cleanCode == "bengali" ->
+                Locale.Builder().setLanguage("bn").setRegion("IN").build()
+            cleanCode == "hi" || cleanCode == "hin" || cleanCode == "hindi" ->
+                Locale.Builder().setLanguage("hi").setRegion("IN").build()
+            cleanCode == "en" || cleanCode == "eng" || cleanCode == "english" ->
+                Locale.US
+            cleanCode == "hinglish" ->
+                Locale.Builder().setLanguage("hi").setRegion("IN").build()
+            cleanCode.contains("-") ->
+                Locale.forLanguageTag(languageCode)
+            else ->
+                Locale.Builder().setLanguage(cleanCode).build()
         }
     }
 }
+

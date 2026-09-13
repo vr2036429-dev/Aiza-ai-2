@@ -349,7 +349,7 @@ private class FakeSpeechRecognitionEngine : SpeechRecognitionEngine {
 
 private class FakeTextToSpeechEngine : TextToSpeechEngine {
     override var isReady: Boolean = true
-    var isSpeaking: Boolean = false
+    override var isSpeaking: Boolean = false
     val spokenPhrases = mutableListOf<String>()
 
     override fun initialize(onReady: (Boolean) -> Unit) {

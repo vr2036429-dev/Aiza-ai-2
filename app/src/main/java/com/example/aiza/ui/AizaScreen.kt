@@ -35,6 +35,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -46,7 +47,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -960,7 +960,7 @@ private fun VoiceInteractionHUD(
                         Icon(
                             imageVector = when (voiceStatus.state) {
                                 VoiceState.LISTENING -> Icons.Default.Mic
-                                VoiceState.SPEAKING -> Icons.Default.VolumeUp
+                                VoiceState.SPEAKING -> Icons.AutoMirrored.Filled.VolumeUp
                                 VoiceState.PROCESSING -> Icons.Default.Refresh
                                 VoiceState.ERROR -> Icons.Default.Warning
                                 VoiceState.IDLE -> Icons.Default.MicOff
@@ -1093,7 +1093,7 @@ private fun AizaInputBar(
             contentAlignment = Alignment.Center
         ) {
             Icon(
-                imageVector = if (isListening) Icons.Default.Mic else if (isSpeaking) Icons.Default.VolumeUp else Icons.Default.Mic,
+                imageVector = if (isListening) Icons.Default.Mic else if (isSpeaking) Icons.AutoMirrored.Filled.VolumeUp else Icons.Default.Mic,
                 contentDescription = if (isListening) "Stop Listening" else if (isSpeaking) "Stop Speaking" else "Speak to Aiza",
                 tint = if (isListening) CrimsonAlert else if (isSpeaking) NeonCyan else TextSecondary,
                 modifier = Modifier.size(20.dp)

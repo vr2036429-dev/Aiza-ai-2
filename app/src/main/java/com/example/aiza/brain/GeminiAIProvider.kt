@@ -1,5 +1,6 @@
 package com.example.aiza.brain
 
+import com.example.BuildConfig
 import com.example.aiza.core.model.Language
 import com.example.aiza.diagnostics.DiagnosticLogger
 import kotlinx.coroutines.Dispatchers
@@ -10,16 +11,32 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
- * Gemini AI Provider implementation using the Gemini Generative Language API.
- * Securely uses BuildConfig credentials without ever exposing keys in logs, UI, or errors.
+ * Gemini AI Provider implementation conforming to the AIProvider interface.
+ * Handles communication with the Google Gemini API using the API key from build configuration (BuildConfig).
+ * Securely communicates with the API without ever exposing keys in logs, UI, or errors.
  */
 class GeminiAIProvider(
     private val apiKeyProvider: () -> String,
     private val logger: DiagnosticLogger
 ) : AIProvider {
+
+    /**
+     * Convenience constructor that automatically obtains the API key from BuildConfig.
+     */
+    constructor(logger: DiagnosticLogger = DiagnosticLogger()) : this(
+        apiKeyProvider = {
+            try {
+                BuildConfig.GEMINI_API_KEY
+            } catch (e: Throwable) {
+                ""
+            }
+        },
+        logger = logger
+    )
 
     override val id: String = "provider_gemini_primary"
     override val displayName: String = "Google Gemini 2.5 Flash"
@@ -35,15 +52,23 @@ class GeminiAIProvider(
 
     override val isConfigured: Boolean
         get() {
-            val key = apiKeyProvider()
-            return key.isNotBlank() && key != "MY_GEMINI_API_KEY"
+            val key = try { apiKeyProvider() } catch (e: Throwable) { "" }
+            return key.isNotBlank() && key != "MY_GEMINI_API_KEY" && !key.startsWith("YOUR_")
         }
 
     override suspend fun ping(): Boolean = withContext(Dispatchers.IO) {
         if (!isConfigured) return@withContext false
         try {
-            // Light check
-            true
+            val key = apiKeyProvider()
+            val url = "https://generativelanguage.googleapis.com/v1beta/models/$modelEndpoint"
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("x-goog-api-key", key)
+                .get()
+                .build()
+
+            val response = httpClient.newCall(request).execute()
+            response.isSuccessful
         } catch (e: Exception) {
             false
         }
@@ -51,12 +76,12 @@ class GeminiAIProvider(
 
     override suspend fun generateResponse(request: AIRequest): Result<AIResponse> = withContext(Dispatchers.IO) {
         val startTime = System.currentTimeMillis()
-        val key = apiKeyProvider()
+        val key = try { apiKeyProvider() } catch (e: Throwable) { "" }
 
         if (!isConfigured) {
             logger.logDiagnostic(
                 category = "AI_BRAIN",
-                message = "Live Gemini API key not provided or placeholder detected. Invoking Aiza Neural Fallback Engine.",
+                message = "Live Gemini API key not detected in BuildConfig. Invoking Aiza Neural Fallback Engine.",
                 level = DiagnosticLogger.Level.INFO
             )
             val fallbackText = generateOfflinePersonaResponse(request)
@@ -83,9 +108,9 @@ class GeminiAIProvider(
                     })
                 })
 
-                // Contents
+                // Conversation Contents
                 val contentsArray = JSONArray()
-                // Append prior conversation turns if any
+                // Append prior conversation turns if available
                 for (msg in request.conversationHistory.takeLast(6)) {
                     val roleString = if (msg.role == AIRole.USER) "user" else "model"
                     contentsArray.put(JSONObject().apply {
@@ -111,10 +136,11 @@ class GeminiAIProvider(
                 })
             }
 
-            val url = "https://generativelanguage.googleapis.com/v1beta/models/$modelEndpoint:generateContent?key=$key"
+            val url = "https://generativelanguage.googleapis.com/v1beta/models/$modelEndpoint:generateContent"
 
             val httpRequest = Request.Builder()
                 .url(url)
+                .addHeader("x-goog-api-key", key)
                 .post(payloadJson.toString().toRequestBody(jsonMediaType))
                 .build()
 
@@ -127,7 +153,7 @@ class GeminiAIProvider(
                     message = "Gemini API HTTP status ${response.code}. Safe fallback triggered.",
                     level = DiagnosticLogger.Level.WARNING
                 )
-                // Graceful fallback to avoid app crash
+                // Graceful fallback to avoid application disruption
                 val fallbackText = generateOfflinePersonaResponse(request)
                 return@withContext Result.success(
                     AIResponse(
@@ -147,7 +173,16 @@ class GeminiAIProvider(
                 val firstCandidate = candidates.getJSONObject(0)
                 val contentObj = firstCandidate.optJSONObject("content")
                 val parts = contentObj?.optJSONArray("parts")
-                val textResult = parts?.optJSONObject(0)?.optString("text", "") ?: ""
+
+                // Extract all text parts concatenated
+                val textBuilder = StringBuilder()
+                if (parts != null) {
+                    for (i in 0 until parts.length()) {
+                        val partText = parts.optJSONObject(i)?.optString("text", "") ?: ""
+                        textBuilder.append(partText)
+                    }
+                }
+                val textResult = textBuilder.toString().trim()
 
                 val usageMetadata = jsonResponse.optJSONObject("usageMetadata")
                 val totalTokens = usageMetadata?.optInt("totalTokenCount", 0) ?: 0
@@ -160,12 +195,12 @@ class GeminiAIProvider(
 
                 Result.success(
                     AIResponse(
-                        content = textResult.trim(),
+                        content = if (textResult.isNotBlank()) textResult else generateOfflinePersonaResponse(request),
                         detectedLanguage = request.targetLanguage,
                         modelName = modelEndpoint,
                         totalTokens = totalTokens,
                         latencyMs = System.currentTimeMillis() - startTime,
-                        isFallback = false
+                        isFallback = textResult.isBlank()
                     )
                 )
             } else {
@@ -181,9 +216,10 @@ class GeminiAIProvider(
                 )
             }
         } catch (e: Exception) {
+            val safeErrorMessage = e.javaClass.simpleName
             logger.logDiagnostic(
                 category = "AI_BRAIN",
-                message = "Network error connecting to Gemini API. Safe fallback activated. (${e.javaClass.simpleName})",
+                message = "Error connecting to Gemini API: $safeErrorMessage. Resilient fallback activated.",
                 level = DiagnosticLogger.Level.ERROR
             )
             val fallback = generateOfflinePersonaResponse(request)

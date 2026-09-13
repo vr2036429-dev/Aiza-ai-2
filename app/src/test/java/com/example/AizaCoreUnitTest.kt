@@ -159,4 +159,29 @@ class AizaCoreUnitTest {
         assertNotNull(authorizedResponse)
         assertTrue(authorizedResponse?.toolResult?.isSuccess == true)
     }
+
+    @Test
+    fun testGeminiAIProviderConformsToAIProvider() = runBlocking {
+        val logger = DiagnosticLogger()
+        // Instantiate GeminiAIProvider directly
+        val provider: AIProvider = com.example.aiza.brain.GeminiAIProvider(logger = logger)
+
+        assertNotNull(provider.id)
+        assertNotNull(provider.displayName)
+        assertTrue(provider.displayName.contains("Gemini"))
+
+        // Test request generation through the AIProvider interface
+        val request = AIRequest(
+            prompt = "Hello Aiza",
+            targetLanguage = Language.ENGLISH,
+            userName = "Asik"
+        )
+        val result = provider.generateResponse(request)
+        assertTrue(result.isSuccess)
+
+        val response = result.getOrNull()
+        assertNotNull(response)
+        assertNotNull(response?.content)
+        assertTrue(response?.content?.isNotBlank() == true)
+    }
 }

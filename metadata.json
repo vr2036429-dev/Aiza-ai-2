@@ -1,6 +1,7 @@
 {
-  "name": "",
-  "description": "",
+  "name": "Aiza",
+  "description": "Modular Personal AI Assistant for Asik with multi-language support, extensible tool orchestrator, and security layer.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
+

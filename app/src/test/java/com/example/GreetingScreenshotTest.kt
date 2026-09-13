@@ -1,8 +1,9 @@
 package com.example
 
-import androidx.compose.material3.Text
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
+import com.example.aiza.ui.AizaBaseConversationScreen
+import com.example.aiza.ui.ChatMessage
 import com.example.ui.theme.MyApplicationTheme
 import com.github.takahirom.roborazzi.RobolectricDeviceQualifiers
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -24,11 +25,18 @@ class GreetingScreenshotTest {
   fun greeting_screenshot() {
     composeTestRule.setContent {
       MyApplicationTheme {
-        Text("AIZA CORE ONLINE // ASIK")
+        AizaBaseConversationScreen(
+          messages = listOf(
+            ChatMessage("1", "Asik", "Hello Aiza, system check.", true, "10:00 AM"),
+            ChatMessage("2", "Aiza", "All core systems nominal, Asik Sir. Ready for your command.", false, "10:00 AM")
+          ),
+          onSendMessage = {}
+        )
       }
     }
 
     composeTestRule.onRoot().captureRoboImage(filePath = "src/test/screenshots/greeting.png")
   }
 }
+
 

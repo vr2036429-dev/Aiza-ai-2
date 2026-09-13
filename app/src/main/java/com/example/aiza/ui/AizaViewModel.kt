@@ -13,6 +13,10 @@ import com.example.aiza.diagnostics.DiagnosticEvent
 import com.example.aiza.memory.MemoryEntry
 import com.example.aiza.modules.AizaModule
 import com.example.aiza.security.ConfirmationRequest
+import com.example.aiza.voice.DefaultNaturalVoiceAssistantModule
+import com.example.aiza.voice.VoiceSettings
+import com.example.aiza.voice.VoiceStatusSnapshot
+import com.example.aiza.voice.output.VoiceInfo
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -24,6 +28,7 @@ import kotlinx.coroutines.launch
 class AizaViewModel(application: Application) : AndroidViewModel(application) {
 
     private val core: AizaCore = AizaContainer.getAizaCore(application)
+    val voiceAssistant: DefaultNaturalVoiceAssistantModule = AizaContainer.getVoiceAssistant(application)
 
     val status: StateFlow<AssistantStatus> = core.status
     val conversationHistory: StateFlow<List<ConversationTurn>> = core.conversationHistory
@@ -39,6 +44,13 @@ class AizaViewModel(application: Application) : AndroidViewModel(application) {
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     val memories: StateFlow<List<MemoryEntry>> = core.memory.memories
+
+    // Voice State & Settings
+    val voiceStatus: StateFlow<VoiceStatusSnapshot> = voiceAssistant.voiceStatus
+    val voiceSettings: StateFlow<VoiceSettings> = voiceAssistant.voiceSettings
+
+    private val _showVoiceSettingsDialog = MutableStateFlow(false)
+    val showVoiceSettingsDialog: StateFlow<Boolean> = _showVoiceSettingsDialog.asStateFlow()
 
     private val _selectedLanguage = MutableStateFlow(Language.UNKNOWN)
     val selectedLanguage: StateFlow<Language> = _selectedLanguage.asStateFlow()
@@ -75,10 +87,15 @@ class AizaViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setLanguageFilter(language: Language) {
         _selectedLanguage.value = language
+        voiceAssistant.settingsRepository.setPreferredLanguage(language)
     }
 
     fun openDiagnostics(open: Boolean) {
         _showDiagnosticsSheet.value = open
+    }
+
+    fun openVoiceSettings(open: Boolean) {
+        _showVoiceSettingsDialog.value = open
     }
 
     fun clearHistory() {
@@ -88,4 +105,63 @@ class AizaViewModel(application: Application) : AndroidViewModel(application) {
     fun clearDiagnostics() {
         core.logger.clear()
     }
+
+    // Voice Actions
+    fun startVoiceListening() {
+        viewModelScope.launch {
+            voiceAssistant.startListening()
+        }
+    }
+
+    fun stopVoiceListening() {
+        viewModelScope.launch {
+            voiceAssistant.stopListening()
+        }
+    }
+
+    fun stopSpeaking() {
+        voiceAssistant.stopSpeaking()
+    }
+
+    fun cancelVoice() {
+        voiceAssistant.cancel()
+    }
+
+    fun setVoiceAssistantEnabled(enabled: Boolean) {
+        voiceAssistant.settingsRepository.setVoiceAssistantEnabled(enabled)
+    }
+
+    fun setWakeWordEnabled(enabled: Boolean) {
+        voiceAssistant.settingsRepository.setWakeWordEnabled(enabled)
+        voiceAssistant.wakeWordEngine.setEnabled(enabled)
+    }
+
+    fun setSpeechRate(rate: Float) {
+        voiceAssistant.settingsRepository.setSpeechRate(rate)
+        voiceAssistant.voiceOutputManager.setSpeechRate(rate)
+    }
+
+    fun setPitch(pitch: Float) {
+        voiceAssistant.settingsRepository.setPitch(pitch)
+        voiceAssistant.voiceOutputManager.setPitch(pitch)
+    }
+
+    fun setPreferredVoiceLanguage(language: Language) {
+        voiceAssistant.settingsRepository.setPreferredLanguage(language)
+    }
+
+    fun setSelectedVoice(voiceName: String?) {
+        voiceAssistant.settingsRepository.setSelectedVoiceName(voiceName)
+        if (voiceName != null) {
+            voiceAssistant.voiceOutputManager.setVoice(voiceName)
+        }
+    }
+
+    fun testVoice() {
+        voiceAssistant.testVoice()
+    }
+
+    fun getAvailableVoices(): List<VoiceInfo> = voiceAssistant.getAvailableVoices()
+
+    fun hasMicrophonePermission(): Boolean = voiceAssistant.voiceInputManager.hasMicrophonePermission()
 }

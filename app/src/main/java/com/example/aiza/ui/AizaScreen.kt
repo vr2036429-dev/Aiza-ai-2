@@ -1,5 +1,8 @@
 package com.example.aiza.ui
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
@@ -36,9 +39,14 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -75,6 +83,9 @@ import com.example.aiza.core.ConversationTurn
 import com.example.aiza.core.model.AssistantStatus
 import com.example.aiza.core.model.Language
 import com.example.aiza.tools.ToolResult
+import com.example.aiza.voice.VoiceError
+import com.example.aiza.voice.VoiceState
+import com.example.aiza.voice.VoiceStatusSnapshot
 import com.example.ui.theme.AmberAlert
 import com.example.ui.theme.AssistantBubbleBg
 import com.example.ui.theme.CardSurface
@@ -100,7 +111,17 @@ fun AizaScreen(
     val history by viewModel.conversationHistory.collectAsState()
     val selectedLanguage by viewModel.selectedLanguage.collectAsState()
     val showDiagnostics by viewModel.showDiagnosticsSheet.collectAsState()
+    val showVoiceSettings by viewModel.showVoiceSettingsDialog.collectAsState()
+    val voiceStatus by viewModel.voiceStatus.collectAsState()
     val pendingConfirmation by viewModel.latestPendingConfirmation.collectAsState()
+
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            viewModel.startVoiceListening()
+        }
+    }
 
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -121,6 +142,7 @@ fun AizaScreen(
                 selectedLanguage = selectedLanguage,
                 onLanguageSelected = { viewModel.setLanguageFilter(it) },
                 onOpenDiagnostics = { viewModel.openDiagnostics(true) },
+                onOpenVoiceSettings = { viewModel.openVoiceSettings(true) },
                 onClearHistory = { viewModel.clearHistory() },
                 hasHistory = history.isNotEmpty()
             )
@@ -133,6 +155,14 @@ fun AizaScreen(
         ) {
             // Live Status Sub-Banner
             AizaStatusBanner(status = status)
+
+            // Live Voice Interaction HUD (Listening / Speaking / Error)
+            VoiceInteractionHUD(
+                voiceStatus = voiceStatus,
+                onStopListening = { viewModel.stopVoiceListening() },
+                onStopSpeaking = { viewModel.stopSpeaking() },
+                onDismissError = { viewModel.cancelVoice() }
+            )
 
             // Conversation Messages Area
             Box(
@@ -170,7 +200,7 @@ fun AizaScreen(
                 viewModel.sendRequest(prompt)
             })
 
-            // User Input Bar
+            // User Input Bar with Voice Input Button
             AizaInputBar(
                 text = inputText,
                 onTextChange = { inputText = it },
@@ -180,7 +210,21 @@ fun AizaScreen(
                         inputText = ""
                     }
                 },
-                isBusy = status.isBusy
+                isBusy = status.isBusy,
+                voiceStatus = voiceStatus,
+                onVoiceInputClick = {
+                    if (voiceStatus.isListening) {
+                        viewModel.stopVoiceListening()
+                    } else if (voiceStatus.isSpeaking) {
+                        viewModel.stopSpeaking()
+                    } else {
+                        if (viewModel.hasMicrophonePermission()) {
+                            viewModel.startVoiceListening()
+                        } else {
+                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    }
+                }
             )
         }
     }
@@ -191,6 +235,13 @@ fun AizaScreen(
             onDismiss = { viewModel.openDiagnostics(false) }
         )
     }
+
+    if (showVoiceSettings) {
+        AizaVoiceSettingsDialog(
+            viewModel = viewModel,
+            onDismiss = { viewModel.openVoiceSettings(false) }
+        )
+    }
 }
 
 @Composable
@@ -199,6 +250,7 @@ private fun AizaTopBar(
     selectedLanguage: Language,
     onLanguageSelected: (Language) -> Unit,
     onOpenDiagnostics: () -> Unit,
+    onOpenVoiceSettings: () -> Unit,
     onClearHistory: () -> Unit,
     hasHistory: Boolean
 ) {
@@ -249,7 +301,7 @@ private fun AizaTopBar(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "v1.0",
+                            text = "v2.0",
                             color = NeonCyan,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -257,7 +309,7 @@ private fun AizaTopBar(
                         )
                     }
                     Text(
-                        text = "PERSONAL AI // ASIK",
+                        text = "NATURAL VOICE AI // ASIK",
                         color = TextSecondary,
                         fontSize = 9.sp,
                         letterSpacing = 1.sp,
@@ -268,6 +320,20 @@ private fun AizaTopBar(
 
             // Controls
             Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onOpenVoiceSettings,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .testTag("voice_settings_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.RecordVoiceOver,
+                        contentDescription = "Voice Engine Settings",
+                        tint = NeonCyan,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+
                 if (hasHistory) {
                     IconButton(
                         onClick = onClearHistory,
@@ -843,11 +909,156 @@ private fun QuickSuggestionsRow(onSelectPrompt: (String) -> Unit) {
 }
 
 @Composable
+private fun VoiceInteractionHUD(
+    voiceStatus: VoiceStatusSnapshot,
+    onStopListening: () -> Unit,
+    onStopSpeaking: () -> Unit,
+    onDismissError: () -> Unit
+) {
+    AnimatedVisibility(visible = voiceStatus.state != VoiceState.IDLE) {
+        val containerBg = when (voiceStatus.state) {
+            VoiceState.LISTENING -> CrimsonAlert.copy(alpha = 0.15f)
+            VoiceState.PROCESSING -> ElectricBlue.copy(alpha = 0.15f)
+            VoiceState.SPEAKING -> NeonCyan.copy(alpha = 0.15f)
+            VoiceState.ERROR -> CrimsonAlert.copy(alpha = 0.25f)
+            VoiceState.IDLE -> CardSurface
+        }
+
+        val borderColor = when (voiceStatus.state) {
+            VoiceState.LISTENING -> CrimsonAlert
+            VoiceState.PROCESSING -> ElectricBlue
+            VoiceState.SPEAKING -> NeonCyan
+            VoiceState.ERROR -> CrimsonAlert
+            VoiceState.IDLE -> CardSurfaceBorder
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(DeepSpaceSurface)
+                .border(1.dp, borderColor)
+                .padding(horizontal = 16.dp, vertical = 10.dp)
+                .testTag("voice_interaction_hud")
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(containerBg)
+                            .border(1.dp, borderColor, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = when (voiceStatus.state) {
+                                VoiceState.LISTENING -> Icons.Default.Mic
+                                VoiceState.SPEAKING -> Icons.Default.VolumeUp
+                                VoiceState.PROCESSING -> Icons.Default.Refresh
+                                VoiceState.ERROR -> Icons.Default.Warning
+                                VoiceState.IDLE -> Icons.Default.MicOff
+                            },
+                            contentDescription = null,
+                            tint = borderColor,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(10.dp))
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = when (voiceStatus.state) {
+                                VoiceState.LISTENING -> "LISTENING TO ASIK..."
+                                VoiceState.PROCESSING -> "PROCESSING AUDIO INPUT..."
+                                VoiceState.SPEAKING -> "AIZA IS SPEAKING..."
+                                VoiceState.ERROR -> "VOICE SYSTEM NOTICE"
+                                VoiceState.IDLE -> "IDLE"
+                            },
+                            color = borderColor,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            letterSpacing = 0.8.sp
+                        )
+
+                        val subText = when (voiceStatus.state) {
+                            VoiceState.LISTENING -> if (voiceStatus.partialText.isNotBlank()) "\"${voiceStatus.partialText}\"" else "Speak naturally to Aiza..."
+                            VoiceState.PROCESSING -> if (voiceStatus.partialText.isNotBlank()) "\"${voiceStatus.partialText}\"" else "Analyzing intent..."
+                            VoiceState.SPEAKING -> "Tap Stop to interrupt speech immediately"
+                            VoiceState.ERROR -> voiceStatus.error?.userMessage ?: "An error occurred in the voice pipeline."
+                            VoiceState.IDLE -> ""
+                        }
+
+                        if (subText.isNotBlank()) {
+                            Text(
+                                text = subText,
+                                color = TextPrimary,
+                                fontSize = 11.5.sp,
+                                maxLines = 2
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // Action controls depending on voice state
+                when (voiceStatus.state) {
+                    VoiceState.LISTENING -> {
+                        Button(
+                            onClick = onStopListening,
+                            colors = ButtonDefaults.buttonColors(containerColor = CrimsonAlert),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.testTag("stop_listening_button")
+                        ) {
+                            Text("DONE", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    VoiceState.SPEAKING -> {
+                        Button(
+                            onClick = onStopSpeaking,
+                            colors = ButtonDefaults.buttonColors(containerColor = CrimsonAlert),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                            modifier = Modifier.testTag("stop_speaking_button")
+                        ) {
+                            Icon(imageVector = Icons.Default.Stop, contentDescription = "Stop Speaking", tint = Color.White, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("STOP", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    VoiceState.ERROR -> {
+                        IconButton(
+                            onClick = onDismissError,
+                            modifier = Modifier.size(28.dp).testTag("dismiss_voice_error_button")
+                        ) {
+                            Icon(imageVector = Icons.Default.Close, contentDescription = "Dismiss", tint = TextMuted, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                    else -> {}
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun AizaInputBar(
     text: String,
     onTextChange: (String) -> Unit,
     onSend: () -> Unit,
-    isBusy: Boolean
+    isBusy: Boolean,
+    voiceStatus: VoiceStatusSnapshot,
+    onVoiceInputClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -857,12 +1068,46 @@ private fun AizaInputBar(
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // Futuristic Microphone Voice Button
+        val isListening = voiceStatus.isListening
+        val isSpeaking = voiceStatus.isSpeaking
+
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(
+                    if (isListening) CrimsonAlert.copy(alpha = 0.25f)
+                    else if (isSpeaking) NeonCyan.copy(alpha = 0.2f)
+                    else CardSurface
+                )
+                .border(
+                    1.dp,
+                    if (isListening) CrimsonAlert
+                    else if (isSpeaking) NeonCyan
+                    else CardSurfaceBorder,
+                    CircleShape
+                )
+                .clickable { onVoiceInputClick() }
+                .testTag("voice_input_button"),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = if (isListening) Icons.Default.Mic else if (isSpeaking) Icons.Default.VolumeUp else Icons.Default.Mic,
+                contentDescription = if (isListening) "Stop Listening" else if (isSpeaking) "Stop Speaking" else "Speak to Aiza",
+                tint = if (isListening) CrimsonAlert else if (isSpeaking) NeonCyan else TextSecondary,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.width(8.dp))
+
         OutlinedTextField(
             value = text,
             onValueChange = onTextChange,
             placeholder = {
                 Text(
-                    text = "Ask Aiza in English, Hindi, Hinglish, Bengali...",
+                    text = "Ask Aiza or tap mic to speak...",
                     color = TextMuted,
                     fontSize = 12.sp
                 )

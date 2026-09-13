@@ -16,18 +16,41 @@ import com.example.aiza.tools.foundation.DeviceStatusTool
 import com.example.aiza.tools.foundation.FileManagerTool
 import com.example.aiza.tools.foundation.QuickReminderTool
 import com.example.aiza.tools.foundation.SendMessageTool
+import com.example.aiza.voice.DefaultNaturalVoiceAssistantModule
+import com.example.aiza.voice.VoiceSettingsRepository
+import com.example.aiza.voice.VoiceStateManager
+import com.example.aiza.voice.input.AndroidSpeechRecognitionEngine
+import com.example.aiza.voice.input.VoiceInputManager
+import com.example.aiza.voice.output.AndroidTextToSpeechEngine
+import com.example.aiza.voice.output.VoiceOutputManager
+import com.example.aiza.voice.wakeword.FoundationWakeWordEngine
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
- * Dependency container configuring and wiring Aiza Core.
+ * Dependency container configuring and wiring Aiza Core and modular extensions.
  */
 object AizaContainer {
 
     @Volatile
     private var instance: AizaCore? = null
 
+    @Volatile
+    private var voiceModuleInstance: DefaultNaturalVoiceAssistantModule? = null
+
     fun getAizaCore(context: Context): AizaCore {
         return instance ?: synchronized(this) {
             instance ?: buildAizaCore(context.applicationContext).also { instance = it }
+        }
+    }
+
+    fun getVoiceAssistant(context: Context): DefaultNaturalVoiceAssistantModule {
+        return voiceModuleInstance ?: synchronized(this) {
+            voiceModuleInstance ?: buildVoiceAssistant(context.applicationContext, getAizaCore(context)).also {
+                voiceModuleInstance = it
+            }
         }
     }
 
@@ -79,5 +102,38 @@ object AizaContainer {
             aiProviderRegistry = aiProviderRegistry,
             logger = logger
         )
+    }
+
+    private fun buildVoiceAssistant(appContext: Context, core: AizaCore): DefaultNaturalVoiceAssistantModule {
+        val logger = core.logger
+        val stateManager = VoiceStateManager(logger)
+        val ttsEngine = AndroidTextToSpeechEngine(appContext, logger)
+        val voiceOutputManager = VoiceOutputManager(ttsEngine, stateManager, logger)
+        val speechEngine = AndroidSpeechRecognitionEngine(appContext, logger)
+        val voiceInputManager = VoiceInputManager(appContext, speechEngine, stateManager, logger)
+        val wakeWordEngine = FoundationWakeWordEngine(logger)
+        val settingsRepo = VoiceSettingsRepository()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+        val module = DefaultNaturalVoiceAssistantModule(
+            voiceInputManager = voiceInputManager,
+            voiceOutputManager = voiceOutputManager,
+            stateManager = stateManager,
+            wakeWordEngine = wakeWordEngine,
+            settingsRepository = settingsRepo,
+            aizaCoreProvider = { core },
+            logger = logger,
+            scope = scope
+        )
+
+        // Register into core ModuleRegistry
+        core.moduleRegistry.registerModule(module)
+
+        // Initialize asynchronously
+        scope.launch {
+            module.initialize()
+        }
+
+        return module
     }
 }
